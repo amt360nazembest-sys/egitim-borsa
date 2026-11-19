@@ -204,6 +204,7 @@ textarea.code{width:100%;height:90px;background:var(--panel2);border:1px solid v
 <div class="th">
   <div class="sym" id="hSym">BTC/USDT</div>
   <div class="lp num" id="hLast">—</div>
+  <div><div class="k">Hız 1dk / 5dk <span class="help" title="Fiyatın ne kadar hızlı hareket ettiği: son 1 dakikada ve son 5 dakikada yüzde kaç değişti. Hızlı dönemlerde kâr da zarar da hızlı büyür; kaldıracı düşük tut, stop kullan.">?</span></div><div class="v num" id="hSpd">ölçülüyor…</div></div>
   <div class="futonly"><div class="k">İşaret Fiyatı <span class="help" title="Mark Price: Binance’in birden fazla borsadan hesapladığı adil fiyat. Kâr/zarar ve LİKİDASYON bu fiyata göre hesaplanır, anlık işlem fiyatına göre değil. Böylece tek bir ani iğne seni likide etmez.">?</span></div><div class="v num" id="hMark">—</div></div>
   <div class="futonly"><div class="k">Fonlama / Geri Sayım <span class="help" title="Funding: Vadeli fiyatı gerçek fiyata yakın tutmak için long ve short pozisyonlar 8 saatte bir birbirine ücret öder. Oran pozitifse LONG’lar SHORT’lara öder; negatifse tersi.">?</span></div><div class="v num" id="hFund">—</div></div>
   <div><div class="k">24s Değişim</div><div class="v num" id="hChg">—</div></div>
@@ -330,7 +331,7 @@ const $=id=>document.getElementById(id);
 let mode='spot',cur='BTC',iv='1m',otype='market',oside='buy',ftype='market',btab='assets',msort='vol',mcat='all';
 const M={spot:{list:[],tick:{}},fut:{list:[],tick:{},mark:{},stock:{},info:false}};
 let book={bids:[],asks:[]},trades=[],dirty={book:0,trades:0,markets:0,header:0};
-let symWS=null,symToken=0,connected=false;
+let symWS=null,symToken=0,connected=false,plog=[];const lastFast={};
 
 /* ================= STATE ================= */
 function defState(){return{usdt:START,assets:{},cost:{},orders:[],history:[],nextId:1,missions:{},draw:{},alerts:[],fav:{spot:['BTC','ETH'],fut:['BTC','NVDA']},f:{wallet:0,pos:{},orders:[],history:[],lev:{}}}}
@@ -552,7 +553,8 @@ const Chart=(function(){
 async function selectSymbol(sym,keep){
   cur=sym;const token=++symToken,src=mode;
   if(symWS){symWS.close();symWS=null}
-  book={bids:[],asks:[]};trades=[];dirty.book=dirty.trades=dirty.header=dirty.markets=1;
+  book={bids:[],asks:[]};trades=[];plog=[];$('hSpd').textContent='ölçülüyor…';dirty.book=dirty.trades=dirty.header=dirty.markets=1;
+  rest(src,`${SRC[src].kl}?symbol=${sym}USDT&interval=1m&limit=7`).then(k=>{if(token!==symToken)return;const now=Date.now();plog=k.map(x=>[x[0]+60000,+x[4]]).filter(x=>x[0]<=now).concat(plog)}).catch(()=>{});
   $('fQtyU').textContent=sym;$('obQ').textContent='Miktar ('+sym+')';
   Chart.clear();
   try{
@@ -566,7 +568,8 @@ async function selectSymbol(sym,keep){
   symWS=openWS(src,[`${s}@kline_${iv}`,`${s}@depth20@100ms`,`${s}@aggTrade`],(stream,d)=>{
     if(token!==symToken)return;
     if(stream.endsWith('@aggTrade')){
-      const p=+d.p;trades.unshift({p,q:+d.q,m:d.m,T:d.T});if(trades.length>40)trades.length=40;
+      const p=+d.p,nw=Date.now();if(!plog.length||nw-plog[plog.length-1][0]>=1000)plog.push([nw,p]);else plog[plog.length-1][1]=p;while(plog.length&&nw-plog[0][0]>370000)plog.shift();
+      trades.unshift({p,q:+d.q,m:d.m,T:d.T});if(trades.length>40)trades.length=40;
       const t=M[src].tick[cur];if(t){t.prev=t.c;t.c=p;if(t.o)t.P=(p-t.o)/t.o*100}
       if(src==='spot')checkSpotOrders(cur,p);else checkFutOrders(cur,p);
       dirty.trades=dirty.header=1;
@@ -704,6 +707,14 @@ function renderHeader(){
   $('midP').textContent=fP(t.c);$('midP').className='num '+(up?'g':'r');
   if(mode==='fut'){const mf=M.fut.mark[cur];$('hMark').textContent=mf?fP(mf.p):'—';
     if(mf&&mf.T){const s=Math.max(0,Math.floor((mf.T-Date.now())/1000)),z=x=>String(x).padStart(2,'0');$('hFund').innerHTML=`<span class="${mf.r>=0?'g':'r'}">${fN(mf.r*100,4)}%</span> / ${z(Math.floor(s/3600))}:${z(Math.floor(s%3600/60))}:${z(s%60)}`}else $('hFund').textContent='—'}
+}
+function pctAgo(ms){if(plog.length<2)return null;const now=Date.now(),last=plog[plog.length-1][1];let ref=null;for(let i=plog.length-1;i>=0;i--){if(plog[i][0]<=now-ms){ref=plog[i][1];break}}if(ref==null)return null;return (last-ref)/ref*100}
+function renderSpeed(){
+  const a=pctAgo(60000),b=pctAgo(300000),el=$('hSpd');if(a==null&&b==null){el.textContent='ölçülüyor…';return}
+  const f=v=>v==null?'—':'<span class="'+(v>=0?'g':'r')+'">'+fS(v)+'%'+(v>0?' ↑':v<0?' ↓':'')+'</span>';
+  const m=Math.abs(a||0),lvl=m>=1?'<b class="o">🔥 Çok hızlı</b>':m>=0.3?'<b class="y">⚡ Hızlı</b>':m>=0.05?'<span class="m">Normal</span>':'<span class="m">😴 Sakin</span>';
+  el.innerHTML=f(a)+' / '+f(b)+' · '+lvl;
+  if(a!=null&&m>=1){const now=Date.now();if(!lastFast[cur]||now-lastFast[cur]>120000){lastFast[cur]=now;toast('⚡ <b>'+esc(cur)+' çok hızlı hareket ediyor:</b> son 1 dakikada <b class="'+(a>=0?'g':'r')+'">'+fS(a)+'%</b>. Böyle anlarda kayma (slippage) artar ve likidasyon riski yükselir. Acele etme, stopunu kontrol et.')}}
 }
 function renderPos(){
   const el=$('pos');let h='';
@@ -1178,7 +1189,7 @@ function frame(){if(dirty.book){dirty.book=0;renderBook()}if(dirty.trades){dirty
 setInterval(()=>{
   $('clock').textContent=new Date().toLocaleTimeString('tr-TR');
   if(dirty.markets){dirty.markets=0;renderMarkets()}
-  renderPortfolio();renderHeader();checkAlerts();renderTA();
+  renderPortfolio();renderHeader();checkAlerts();renderTA();renderSpeed();
   if(btab!=='hist'&&btab!=='fhist'&&btab!=='perf')renderBottom();
   if(mode==='fut'){if(S.f.pos[cur])drawLines()}
   if((otype!=='market'&&!$('fPrice').value)||(ftype!=='market'&&!$('ffPrice').value))setFormPrice();
